@@ -1,0 +1,42 @@
+# Environment
+.env
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Large Model Weights (Too big for GitHub)
+models/
+*.gguf
+*.bin
+*.pt
+*.safetensors
+*.onnx
+
+# Testing & Cache
+.pytest_cache/
+.coverage
+htmlcov/
