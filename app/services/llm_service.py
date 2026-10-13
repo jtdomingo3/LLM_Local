@@ -28,6 +28,8 @@ from app.models.schemas import (
     ModelInfo,
     TokenUsage,
 )
+from app.services.request_router import RequestRouter, get_request_router
+from app.services.response_cache import ResponseCache, get_response_cache
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,8 @@ class LLMService:
             base_url=self.settings.ollama_base_url,
             api_key=self.settings.ollama_api_key,
         )
+        self.cache = get_response_cache(self.settings)
+        self.router = get_request_router(self.settings)
         self._start_time = time.time()
 
     async def _ensure_backend(self) -> None:
@@ -58,18 +62,68 @@ class LLMService:
             await mgr.ensure_running()
 
     # ---------------------------------------------------------------
+    # Context length optimization
+    # ---------------------------------------------------------------
+
+    def _compute_num_ctx(
+        self,
+        messages: list[dict[str, str]] | str,
+        max_tokens: int,
+        min_ctx: int = 1024,
+        max_ctx: int = 4096,
+    ) -> int:
+        """
+        Dynamically calculate the optimal context window (num_ctx) in tokens.
+        Avoids statically allocating 4096 tokens when 1024 or 2048 is sufficient,
+        freeing up to 50-75% KV-cache VRAM on 4GB GPUs.
+        """
+        if isinstance(messages, str):
+            total_chars = len(messages)
+        else:
+            total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+
+        estimated_input = int(total_chars / 3.5) + 32
+        needed = estimated_input + max_tokens
+
+        if needed <= 1024:
+            bracket = 1024
+        elif needed <= 2048:
+            bracket = 2048
+        else:
+            bracket = 4096
+
+        upper_limit = min(max_ctx, self.settings.default_num_ctx)
+        return max(min_ctx, min(bracket, upper_limit))
+
+    # ---------------------------------------------------------------
     # Chat generation
     # ---------------------------------------------------------------
 
     async def generate_chat(self, request: ChatRequest) -> ChatResponse:
         """Generate a chat response (non-streaming, full JSON response)."""
         await self._ensure_backend()
-        model = request.model or self.settings.model_daily
+        model = self.router.route_chat_model(request.prompt, request.model)
         messages = self._build_messages(
             prompt=request.prompt,
             system_prompt=request.system_prompt or "You are a helpful, concise assistant.",
             history=request.messages,
         )
+
+        # 1. Check response cache to save 100% compute/VRAM on repeats
+        cached = self.cache.get(model, request.temperature, messages)
+        if cached:
+            cached_text, cached_tokens = cached
+            usage = TokenUsage(**cached_tokens) if cached_tokens else TokenUsage()
+            return ChatResponse(
+                model=model,
+                response=cached_text,
+                usage=usage,
+                latency_ms=0.5,
+            )
+
+        # 2. Dynamic context window clamp
+        num_ctx = self._compute_num_ctx(messages, request.max_tokens)
+        extra_body = {"options": {"num_ctx": num_ctx}}
 
         start = time.perf_counter()
 
@@ -79,6 +133,7 @@ class LLMService:
                 messages=messages,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                extra_body=extra_body,
             )
 
             elapsed_ms = (time.perf_counter() - start) * 1000
@@ -92,9 +147,19 @@ class LLMService:
                     total_tokens=completion.usage.total_tokens or 0,
                 )
 
+            # Store in cache
+            if content:
+                self.cache.set(
+                    model=model,
+                    temperature=request.temperature,
+                    payload=messages,
+                    response=content,
+                    token_usage=usage.model_dump(),
+                )
+
             logger.info(
-                "Chat generated | model=%s | tokens=%d | latency=%.0fms",
-                model, usage.total_tokens, elapsed_ms,
+                "Chat generated | model=%s | tokens=%d | num_ctx=%d | latency=%.0fms",
+                model, usage.total_tokens, num_ctx, elapsed_ms,
             )
 
             return ChatResponse(
@@ -114,12 +179,15 @@ class LLMService:
     async def generate_chat_stream(self, request: ChatRequest) -> AsyncGenerator[str, None]:
         """Generate a chat response as an SSE stream, yielding tokens as they arrive."""
         await self._ensure_backend()
-        model = request.model or self.settings.model_daily
+        model = self.router.route_chat_model(request.prompt, request.model)
         messages = self._build_messages(
             prompt=request.prompt,
             system_prompt=request.system_prompt or "You are a helpful, concise assistant.",
             history=request.messages,
         )
+
+        num_ctx = self._compute_num_ctx(messages, request.max_tokens)
+        extra_body = {"options": {"num_ctx": num_ctx}}
 
         try:
             stream = await self.client.chat.completions.create(
@@ -128,6 +196,7 @@ class LLMService:
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 stream=True,
+                extra_body=extra_body,
             )
 
             async for chunk in stream:
@@ -153,7 +222,7 @@ class LLMService:
     async def generate_code(self, request: CodeRequest) -> CodeResponse:
         """Generate code (non-streaming, full JSON response)."""
         await self._ensure_backend()
-        model = request.model or self.settings.model_coding
+        model = self.router.route_code_model(request.prompt, request.model)
 
         system_prompt = request.system_prompt or self._build_code_system_prompt(
             request.language
@@ -163,6 +232,23 @@ class LLMService:
             system_prompt=system_prompt,
         )
 
+        # 1. Check response cache
+        cached = self.cache.get(model, request.temperature, messages)
+        if cached:
+            cached_text, cached_tokens = cached
+            usage = TokenUsage(**cached_tokens) if cached_tokens else TokenUsage()
+            return CodeResponse(
+                model=model,
+                language=request.language,
+                response=cached_text,
+                usage=usage,
+                latency_ms=0.5,
+            )
+
+        # 2. Dynamic context window clamp
+        num_ctx = self._compute_num_ctx(messages, request.max_tokens)
+        extra_body = {"options": {"num_ctx": num_ctx}}
+
         start = time.perf_counter()
 
         try:
@@ -171,6 +257,7 @@ class LLMService:
                 messages=messages,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                extra_body=extra_body,
             )
 
             elapsed_ms = (time.perf_counter() - start) * 1000
@@ -184,9 +271,19 @@ class LLMService:
                     total_tokens=completion.usage.total_tokens or 0,
                 )
 
+            # Store in cache
+            if content:
+                self.cache.set(
+                    model=model,
+                    temperature=request.temperature,
+                    payload=messages,
+                    response=content,
+                    token_usage=usage.model_dump(),
+                )
+
             logger.info(
-                "Code generated | model=%s | lang=%s | tokens=%d | latency=%.0fms",
-                model, request.language, usage.total_tokens, elapsed_ms,
+                "Code generated | model=%s | lang=%s | tokens=%d | num_ctx=%d | latency=%.0fms",
+                model, request.language, usage.total_tokens, num_ctx, elapsed_ms,
             )
 
             return CodeResponse(
@@ -207,7 +304,7 @@ class LLMService:
     async def generate_code_stream(self, request: CodeRequest) -> AsyncGenerator[str, None]:
         """Generate code as an SSE stream."""
         await self._ensure_backend()
-        model = request.model or self.settings.model_coding
+        model = self.router.route_code_model(request.prompt, request.model)
 
         system_prompt = request.system_prompt or self._build_code_system_prompt(
             request.language
@@ -217,6 +314,9 @@ class LLMService:
             system_prompt=system_prompt,
         )
 
+        num_ctx = self._compute_num_ctx(messages, request.max_tokens)
+        extra_body = {"options": {"num_ctx": num_ctx}}
+
         try:
             stream = await self.client.chat.completions.create(
                 model=model,
@@ -224,6 +324,7 @@ class LLMService:
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 stream=True,
+                extra_body=extra_body,
             )
 
             async for chunk in stream:
@@ -253,9 +354,9 @@ class LLMService:
             model=request.model,
             system_prompt=(
                 f"You are an expert code reviewer. Analyze the following{lang_hint} code and provide:\n"
-                "1. **Issues**: bugs, security vulnerabilities, or logical errors\n"
-                "2. **Improvements**: performance, readability, and best practices\n"
-                "3. **Refactored Code**: an improved version if applicable\n"
+                "1. **Issues**: bugs, security, logic errors\n"
+                "2. **Improvements**: performance and readability\n"
+                "3. **Refactored Code**: improved version if applicable\n"
                 "Be concise and specific."
             ),
             temperature=request.temperature,
@@ -273,10 +374,10 @@ class LLMService:
             model=request.model,
             system_prompt=(
                 f"You are an expert programmer and teacher. Explain the following{lang_hint} code:\n"
-                "1. **Purpose**: what the code does at a high level\n"
-                "2. **Step-by-step**: walk through the logic line by line\n"
-                "3. **Key concepts**: highlight any patterns, algorithms, or techniques used\n"
-                "Be clear and concise. Use examples if helpful."
+                "1. **Purpose**: high level summary\n"
+                "2. **Logic**: step-by-step logic\n"
+                "3. **Key Concepts**: patterns or algorithms used\n"
+                "Be concise."
             ),
             temperature=request.temperature,
             max_tokens=request.max_tokens,
@@ -287,6 +388,27 @@ class LLMService:
     # ---------------------------------------------------------------
     # Model management & health
     # ---------------------------------------------------------------
+
+    async def preload_model(self, model_name: str) -> bool:
+        """
+        Preload a model into GPU memory ahead of time.
+        Sends an empty prompt to Ollama to warm up weights and KV cache.
+        """
+        await self._ensure_backend()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                res = await http_client.post(
+                    "http://localhost:11434/api/generate",
+                    json={
+                        "model": model_name,
+                        "prompt": "",
+                        "keep_alive": self.settings.ollama_keep_alive,
+                    },
+                )
+                return res.status_code == 200
+        except Exception as e:
+            logger.warning("Failed to preload model %s: %s", model_name, e)
+            return False
 
     async def list_models(self) -> list[ModelInfo]:
         """List all models available in Ollama."""
@@ -379,16 +501,11 @@ class LLMService:
         return messages
 
     def _build_code_system_prompt(self, language: str | None = None) -> str:
-        """Build a system prompt optimized for code generation."""
-        lang_instruction = ""
-        if language:
-            lang_instruction = f" Write code in {language}."
-
+        """Build a lean system prompt optimized for code generation."""
+        lang_instruction = f" Write code in {language}." if language else ""
         return (
-            "You are an expert programmer. Write clean, efficient, well-documented code."
-            f"{lang_instruction}"
-            " Include brief explanations of your approach."
-            " Follow best practices and handle edge cases."
+            f"You are an expert programmer. Write clean, efficient code.{lang_instruction}"
+            " Include brief explanations."
         )
 
 

@@ -48,10 +48,26 @@ async def readiness(
     else:
         status = "degraded"
 
+    from app.services.response_cache import ResponseCache
+
+    cache_stats = None
+    cache_obj = getattr(service, "cache", None)
+    if isinstance(cache_obj, ResponseCache):
+        cache_stats = cache_obj.get_stats()
+
+    loaded_models: list[str] = []
+    try:
+        from app.services.engine_manager import get_engine_manager
+        loaded_models = await get_engine_manager().get_loaded_models()
+    except Exception:
+        pass
+
     return HealthResponse(
         status=status,
         ollama_connected=ollama_ok,
         models_available=model_names,
+        loaded_models=loaded_models,
         gpu_detected=gpu_ok,
         uptime_seconds=round(service.uptime_seconds, 2),
+        cache_stats=cache_stats,
     )

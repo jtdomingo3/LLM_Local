@@ -64,6 +64,7 @@ def test_v1_chat_completions_sync(client):
     }
 
     mock_service.client.chat.completions.create = AsyncMock(return_value=mock_completion)
+    mock_service._compute_num_ctx = MagicMock(return_value=2048)
 
     app.dependency_overrides[get_llm_service] = lambda: mock_service
     try:
@@ -78,5 +79,43 @@ def test_v1_chat_completions_sync(client):
         assert response.status_code == 200
         data = response.json()
         assert data["choices"][0]["message"]["content"] == "print('hello world')"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_v1_completions_sync(client):
+    """Test /v1/completions tab-autocomplete non-streaming."""
+    mock_service = AsyncMock()
+    mock_completion = MagicMock()
+    mock_completion.model_dump.return_value = {
+        "id": "cmpl-test-123",
+        "object": "text_completion",
+        "created": 1700000000,
+        "model": "qwen2.5-coder:3b",
+        "choices": [
+            {
+                "index": 0,
+                "text": "def calculate_sum():",
+                "finish_reason": "stop",
+            }
+        ],
+    }
+
+    mock_service.client.completions.create = AsyncMock(return_value=mock_completion)
+    mock_service._compute_num_ctx = MagicMock(return_value=1024)
+
+    app.dependency_overrides[get_llm_service] = lambda: mock_service
+    try:
+        response = client.post(
+            "/v1/completions",
+            json={
+                "model": "qwen2.5-coder:3b",
+                "prompt": "def calculate",
+                "stream": False,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["choices"][0]["text"] == "def calculate_sum():"
     finally:
         app.dependency_overrides.clear()

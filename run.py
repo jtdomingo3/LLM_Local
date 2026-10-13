@@ -34,8 +34,8 @@ def main() -> None:
     parser.add_argument(
         "--reload",
         action="store_true",
-        default=True,
-        help="Enable auto-reload on code change (default: True)",
+        default=False,
+        help="Enable auto-reload on code change (default: False to save memory)",
     )
 
     args = parser.parse_args()

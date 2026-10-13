@@ -66,4 +66,49 @@ async def active_models(
         },
         "context_window": settings.default_num_ctx,
         "max_tokens": settings.max_tokens,
+        "max_tokens_chat": settings.max_tokens_chat,
+        "max_tokens_code": settings.max_tokens_code,
+        "optimizations": {
+            "smart_routing_enabled": settings.smart_routing_enabled,
+            "response_cache_enabled": settings.response_cache_enabled,
+            "keep_alive": settings.ollama_keep_alive,
+            "max_loaded_models": settings.ollama_max_loaded_models,
+        },
+    }
+
+
+@router.post(
+    "/preload",
+    summary="Preload a model into GPU memory",
+    description="Preheats model weights in Ollama ahead of time for low first-token latency.",
+)
+async def preload_model(
+    model: str | None = None,
+    service: LLMService = Depends(get_llm_service),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Preload model weights into VRAM."""
+    target_model = model or settings.model_coding
+    success = await service.preload_model(target_model)
+    return {
+        "status": "success" if success else "failed",
+        "model": target_model,
+        "preloaded": success,
+    }
+
+
+@router.post(
+    "/unload",
+    summary="Unload models from GPU VRAM",
+    description="Evicts models from GPU memory immediately, dropping VRAM to 0 MB.",
+)
+async def unload_models() -> dict:
+    """Force eviction of models from VRAM."""
+    from app.services.engine_manager import get_engine_manager
+    mgr = get_engine_manager()
+    unloaded = await mgr.unload_models()
+    return {
+        "status": "success",
+        "unloaded_models": unloaded,
+        "count": len(unloaded),
     }

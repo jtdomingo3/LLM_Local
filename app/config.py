@@ -43,14 +43,39 @@ class Settings(BaseSettings):
     model_power_coding: str = "qwen2.5-coder:7b"
 
     # ---------------------------------------------------------------
+    # Engine optimization
+    # Keep-alive: 90s releases VRAM quickly during idle periods
+    # Max loaded models: 1 strictly prevents VRAM spillover on 4GB GPUs
+    # Num parallel: 1 prevents multiple concurrent context allocations
+    # ---------------------------------------------------------------
+    ollama_keep_alive: str = "90s"
+    ollama_max_loaded_models: int = 1
+    ollama_num_parallel: int = 1
+
+    # ---------------------------------------------------------------
     # Generation defaults
     # Context window: 4096 is safe for 4GB VRAM with q8_0 KV cache
     # Temperature: 0.7 for chat (creative), 0.2 for code (deterministic)
+    # Default token generation caps: reduced to 2048 to prevent runaway memory
     # ---------------------------------------------------------------
     default_num_ctx: int = 4096
     default_temperature_chat: float = 0.7
     default_temperature_code: float = 0.2
     max_tokens: int = 4096
+    max_tokens_chat: int = 2048
+    max_tokens_code: int = 2048
+
+    # ---------------------------------------------------------------
+    # Response Caching (RAM-saving & zero-GPU token reuse)
+    # ---------------------------------------------------------------
+    response_cache_enabled: bool = True
+    response_cache_max_size: int = 256
+    response_cache_ttl_seconds: int = 3600
+
+    # ---------------------------------------------------------------
+    # Smart Request Routing (routes tasks to right-sized model)
+    # ---------------------------------------------------------------
+    smart_routing_enabled: bool = True
 
     # ---------------------------------------------------------------
     # Logging

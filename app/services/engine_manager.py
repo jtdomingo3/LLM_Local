@@ -18,6 +18,8 @@ import time
 
 import httpx
 
+from app.config import Settings, get_settings
+
 logger = logging.getLogger("app.engine")
 
 
@@ -27,8 +29,13 @@ class EngineManager:
     Enables python run.py to stand alone as a single command.
     """
 
-    def __init__(self, base_url: str = "http://localhost:11434") -> None:
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        settings: Settings | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.settings = settings or get_settings()
         self.process: subprocess.Popen | None = None
         self._we_started_it = False
 
@@ -88,6 +95,9 @@ class EngineManager:
         env = os.environ.copy()
         env["OLLAMA_FLASH_ATTENTION"] = "1"
         env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
+        env["OLLAMA_KEEP_ALIVE"] = self.settings.ollama_keep_alive
+        env["OLLAMA_MAX_LOADED_MODELS"] = str(self.settings.ollama_max_loaded_models)
+        env["OLLAMA_NUM_PARALLEL"] = str(self.settings.ollama_num_parallel)
 
         # On Windows, suppress console popup window for clean background execution
         creationflags = 0
@@ -125,8 +135,75 @@ class EngineManager:
             logger.error("Failed to start headless inference engine: %s", e)
             return False
 
+    async def get_loaded_models(self) -> list[str]:
+        """Fetch list of currently loaded models in memory via /api/ps."""
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                res = await client.get(f"{self.base_url}/api/ps")
+                if res.status_code == 200:
+                    data = res.json()
+                    return [m.get("name") or m.get("model", "") for m in data.get("models", [])]
+        except Exception as e:
+            logger.debug("Failed to query loaded models from engine: %s", e)
+        return []
+
+    async def unload_models(self) -> list[str]:
+        """
+        Forcefully unloads all currently loaded models from VRAM/RAM
+        by issuing keep_alive=0 requests.
+        """
+        loaded = await self.get_loaded_models()
+        unloaded = []
+        if not loaded:
+            return unloaded
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for model_name in loaded:
+                if not model_name:
+                    continue
+                try:
+                    res = await client.post(
+                        f"{self.base_url}/api/generate",
+                        json={"model": model_name, "keep_alive": 0},
+                    )
+                    if res.status_code == 200:
+                        unloaded.append(model_name)
+                        logger.info("Unloaded model from VRAM: %s", model_name)
+                except Exception as e:
+                    logger.warning("Failed to unload model %s: %s", model_name, e)
+        return unloaded
+
+    def _unload_models_sync(self) -> list[str]:
+        """Synchronously evict all active models from VRAM (used during shutdown)."""
+        unloaded = []
+        try:
+            with httpx.Client(timeout=2.0) as client:
+                res = client.get(f"{self.base_url}/api/ps")
+                if res.status_code == 200:
+                    models = [
+                        m.get("name") or m.get("model", "")
+                        for m in res.json().get("models", [])
+                    ]
+                    for model_name in models:
+                        if model_name:
+                            client.post(
+                                f"{self.base_url}/api/generate",
+                                json={"model": model_name, "keep_alive": 0},
+                                timeout=3.0,
+                            )
+                            unloaded.append(model_name)
+        except Exception as e:
+            logger.debug("Error during sync model unload: %s", e)
+        return unloaded
+
     def shutdown(self) -> None:
-        """Clean up the headless engine process on server shutdown."""
+        """Clean up the headless engine process and VRAM on server shutdown."""
+        # First attempt to free GPU memory gracefully
+        try:
+            self._unload_models_sync()
+        except Exception:
+            pass
+
         if self._we_started_it and self.process:
             logger.info("Shutting down managed inference engine (PID: %d)...", self.process.pid)
             try:

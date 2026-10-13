@@ -31,9 +31,22 @@ Write-Host "  + OLLAMA_FLASH_ATTENTION = 1 (10-15% speed boost)" -ForegroundColo
 [System.Environment]::SetEnvironmentVariable("OLLAMA_KV_CACHE_TYPE", "q8_0", "User")
 Write-Host "  + OLLAMA_KV_CACHE_TYPE = q8_0 (50% KV cache reduction)" -ForegroundColor Green
 
+# Aggressive VRAM cleanup & single-model enforcement (essential for 4GB VRAM)
+[System.Environment]::SetEnvironmentVariable("OLLAMA_KEEP_ALIVE", "90s", "User")
+Write-Host "  + OLLAMA_KEEP_ALIVE = 90s (releases VRAM after 90s idle)" -ForegroundColor Green
+
+[System.Environment]::SetEnvironmentVariable("OLLAMA_MAX_LOADED_MODELS", "1", "User")
+Write-Host "  + OLLAMA_MAX_LOADED_MODELS = 1 (prevents VRAM spillover)" -ForegroundColor Green
+
+[System.Environment]::SetEnvironmentVariable("OLLAMA_NUM_PARALLEL", "1", "User")
+Write-Host "  + OLLAMA_NUM_PARALLEL = 1 (prevents multi-context VRAM surge)" -ForegroundColor Green
+
 # Also set for current session
 $env:OLLAMA_FLASH_ATTENTION = "1"
 $env:OLLAMA_KV_CACHE_TYPE = "q8_0"
+$env:OLLAMA_KEEP_ALIVE = "90s"
+$env:OLLAMA_MAX_LOADED_MODELS = "1"
+$env:OLLAMA_NUM_PARALLEL = "1"
 
 Write-Host "  Environment variables set (User level + current session)" -ForegroundColor Green
 Write-Host ""
@@ -147,6 +160,20 @@ if ($kvCache -eq "q8_0") {
     Write-Host "  + KV Cache Quantization: q8_0 (50% savings)" -ForegroundColor Green
 } else {
     Write-Host "  ! KV Cache Quantization: NOT SET" -ForegroundColor Red
+}
+
+$keepAlive = [System.Environment]::GetEnvironmentVariable("OLLAMA_KEEP_ALIVE", "User")
+if ($keepAlive) {
+    Write-Host "  + Keep Alive: $keepAlive" -ForegroundColor Green
+} else {
+    Write-Host "  ! Keep Alive: NOT SET" -ForegroundColor Yellow
+}
+
+$maxLoaded = [System.Environment]::GetEnvironmentVariable("OLLAMA_MAX_LOADED_MODELS", "User")
+if ($maxLoaded -eq "1") {
+    Write-Host "  + Max Loaded Models: 1 (safe for 4GB VRAM)" -ForegroundColor Green
+} else {
+    Write-Host "  ! Max Loaded Models: NOT SET" -ForegroundColor Yellow
 }
 
 # Final summary

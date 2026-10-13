@@ -107,10 +107,11 @@ async def chat_completions(
     temp = request.temperature if request.temperature is not None else settings.default_temperature_code
     max_tok = request.max_tokens or settings.max_tokens
 
-    # Extra parameters passed to Ollama enforcing our memory optimizations
+    # Dynamically scale num_ctx based on prompt length (1024, 2048, or 4096) to save VRAM
+    computed_ctx = service._compute_num_ctx(request.messages, max_tok)
     extra_body = {
         "options": {
-            "num_ctx": settings.default_num_ctx,  # Enforces 4096 context to protect VRAM
+            "num_ctx": computed_ctx,
         }
     }
 
@@ -182,10 +183,13 @@ async def completions(
     target_model = request.model or settings.model_coding
     temp = request.temperature if request.temperature is not None else settings.default_temperature_code
     max_tok = request.max_tokens or 256  # Autocomplete typically needs smaller token lengths
+    prompt_text = request.prompt if isinstance(request.prompt, str) else "\n".join(request.prompt)
 
+    # Dynamic num_ctx calculation for autocomplete
+    computed_ctx = service._compute_num_ctx(prompt_text, max_tok)
     extra_body = {
         "options": {
-            "num_ctx": settings.default_num_ctx,
+            "num_ctx": computed_ctx,
         }
     }
 

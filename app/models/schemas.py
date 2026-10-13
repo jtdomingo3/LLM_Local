@@ -7,6 +7,8 @@ from malformed payloads before hitting the LLM backend.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -66,7 +68,7 @@ class ChatRequest(BaseModel):
         description="Sampling temperature. Higher = more creative, lower = more deterministic",
     )
     max_tokens: int = Field(
-        default=4096,
+        default=2048,
         ge=1,
         le=32768,
         description="Maximum number of tokens to generate",
@@ -120,7 +122,7 @@ class CodeRequest(BaseModel):
         description="Sampling temperature. Low values (0.1-0.3) recommended for code",
     )
     max_tokens: int = Field(
-        default=4096,
+        default=2048,
         ge=1,
         le=32768,
         description="Maximum number of tokens to generate",
@@ -168,6 +170,14 @@ class HealthResponse(BaseModel):
     uptime_seconds: float = Field(
         default=0.0,
         description="How long the service has been running",
+    )
+    cache_stats: dict[str, Any] | None = Field(
+        default=None,
+        description="Response cache performance and size metrics",
+    )
+    loaded_models: list[str] = Field(
+        default_factory=list,
+        description="Models currently resident in GPU/host memory",
     )
 
 

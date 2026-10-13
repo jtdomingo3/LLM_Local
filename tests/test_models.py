@@ -63,3 +63,36 @@ def test_active_models_configuration(client):
     assert data["daily"]["model"] == "phi4-mini"
     assert data["coding"]["model"] == "qwen2.5-coder:3b"
     assert data["context_window"] == 4096
+    assert "optimizations" in data
+    assert data["optimizations"]["smart_routing_enabled"] is True
+
+
+def test_preload_model_endpoint(client):
+    """Test /api/models/preload warms up the model."""
+    mock_service = AsyncMock()
+    mock_service.preload_model.return_value = True
+
+    app.dependency_overrides[get_llm_service] = lambda: mock_service
+    try:
+        response = client.post("/api/models/preload", params={"model": "qwen2.5-coder:3b"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["model"] == "qwen2.5-coder:3b"
+        assert data["preloaded"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_unload_models_endpoint(client):
+    """Test /api/models/unload evicts models from memory."""
+    from unittest.mock import patch
+
+    with patch("app.services.engine_manager.EngineManager.unload_models", new_callable=AsyncMock) as mock_unload:
+        mock_unload.return_value = ["phi4-mini", "qwen2.5-coder:3b"]
+        response = client.post("/api/models/unload")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["count"] == 2
+        assert "phi4-mini" in data["unloaded_models"]

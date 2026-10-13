@@ -18,13 +18,21 @@
 
 ## ⚡ Key Architectural Optimizations
 
-| Optimization | Configuration / Value | Performance Impact |
+| Optimization | Configuration / Value | Performance & Memory Impact |
 |---|---|---|
-| **Standalone Engine Lifecycle** | Auto-managed via `engine_manager.py` | 1-command startup/shutdown, no external tray apps needed |
+| **Standalone Engine Lifecycle** | Auto-managed via `engine_manager.py` | 1-command startup/shutdown; cleanly auto-unloads VRAM on shutdown |
+| **Aggressive VRAM Release** | `OLLAMA_KEEP_ALIVE=90s` | Automatically releases GPU VRAM back to OS after 90s idle |
+| **Single-Model VRAM Cap** | `OLLAMA_MAX_LOADED_MODELS=1` | Strictly prevents multi-model spillover beyond 4GB VRAM |
+| **Concurrency Slot Cap** | `OLLAMA_NUM_PARALLEL=1` | Eliminates concurrent multi-context memory allocations |
+| **Dynamic Context Window** | Adaptive brackets (1024 / 2048 / 4096) | Saves 50–75% KV-cache VRAM on small-to-medium prompts |
+| **Zero-GPU Response Cache** | Thread-safe LRU cache with TTL (`response_cache.py`) | 0ms latency & 0 GPU inference on repeated queries |
+| **Smart Heuristic Router** | Complexity classifier (`request_router.py`) | Routes lightweight tasks to 3B (100% GPU) and heavy to 7B |
 | **Flash Attention** | `OLLAMA_FLASH_ATTENTION=1` | ~25–35% faster prompt evaluation, lower VRAM footprint |
-| **KV Cache Quantization** | `OLLAMA_KV_CACHE_TYPE=q8_0` | ~50% KV cache VRAM reduction, enables 4k context within 4GB VRAM |
+| **KV Cache Quantization** | `OLLAMA_KV_CACHE_TYPE=q8_0` | ~50% KV cache VRAM reduction vs FP16 |
 | **Quantization Scheme** | `Q4_K_M` (imatrix calibrated) | Near-FP16 perplexity with only ~2.2–2.5 GB VRAM usage |
-| **Context Window** | `num_ctx = 4096` | Safe headroom for 4GB VRAM avoiding out-of-memory spill |
+| **On-Demand VRAM Purge** | `POST /api/models/unload` | Instantly flushes model weights from GPU memory (0 MB VRAM) |
+| **Ahead-Of-Time Preload** | `POST /api/models/preload` | Preheats model weights into VRAM for low initial latency |
+| **Process Memory Saving** | `run.py --reload=False` (default) | Eliminates duplicate Python watcher process in memory |
 | **Async Non-blocking I/O** | `AsyncOpenAI` client + FastAPI | High-throughput concurrent request handling |
 | **OpenAI Compatibility** | `/v1/chat/completions`, `/v1/models` | Drop-in support for Continue.dev, Cursor, Aider, Chatbox |
 | **Streaming Telemetry** | Server-Sent Events (SSE) | Near-zero Time-to-First-Token (TTFT) |
@@ -49,6 +57,7 @@ c:\Users\Jeff\repo\LLM_Local\
 ├── .env.example                  # Template environment variables
 ├── requirements.txt              # Production and test dependencies
 ├── run.py                        # Single entry point (auto-starts backend)
+├── setup_ollama.ps1              # Automated setup script with hardware flags
 ├── README.md                     # Documentation
 ├── models/                       # Hard-linked GGUF models on disk
 │   ├── phi4-mini.gguf            # 2.5 GB
@@ -57,7 +66,7 @@ c:\Users\Jeff\repo\LLM_Local\
 ├── app/
 │   ├── __init__.py
 │   ├── main.py                   # FastAPI app factory, CORS, lifespan probes
-│   ├── config.py                 # Pydantic Settings & hardware defaults
+│   ├── config.py                 # Pydantic Settings & optimization defaults
 │   ├── middleware/
 │   │   ├── __init__.py
 │   │   └── logging_middleware.py # Request ID tracing & latency logging
@@ -68,14 +77,24 @@ c:\Users\Jeff\repo\LLM_Local\
 │   │   ├── __init__.py
 │   │   ├── chat.py               # /api/chat & /api/chat/stream
 │   │   ├── code.py               # /api/code, /stream, /review, /explain
-│   │   ├── health.py             # /health/live & /health/ready
-│   │   ├── models.py             # /api/models & /api/models/active
-│   │   └── openai_compat.py      # /v1/chat/completions, /v1/models (Continue.dev)
+│   │   ├── health.py             # /health/live & /health/ready (with cache stats)
+│   │   ├── models.py             # /api/models, /active, /preload, /unload
+│   │   └── openai_compat.py      # /v1/chat/completions, /v1/completions, /v1/models
 │   └── services/
 │       ├── __init__.py
-│       ├── engine_manager.py     # Headless engine auto-start & cleanup
-│       └── llm_service.py        # Async inference, health, and GPU metrics
-└── tests/                        # 19 passing unit tests
+│       ├── engine_manager.py     # Headless engine auto-start, VRAM cleanup & unload
+│       ├── llm_service.py        # Async inference, dynamic num_ctx & preload
+│       ├── request_router.py     # Heuristic complexity classifier & smart model routing
+│       └── response_cache.py     # Thread-safe LRU response cache with SHA256 keying
+└── tests/                        # 32 passing unit tests
+    ├── test_chat.py
+    ├── test_code.py
+    ├── test_engine_manager.py
+    ├── test_health.py
+    ├── test_models.py
+    ├── test_openai_compat.py
+    ├── test_request_router.py
+    └── test_response_cache.py
 ```
 
 ---
@@ -255,6 +274,17 @@ curl http://localhost:8100/api/models
 #### View Active Defaults (`GET /api/models/active`)
 ```bash
 curl http://localhost:8100/api/models/active
+```
+
+#### Preload Model into VRAM (`POST /api/models/preload`)
+```bash
+curl -X POST "http://localhost:8100/api/models/preload?model=qwen2.5-coder:3b"
+```
+
+#### Unload All Models from GPU Memory (`POST /api/models/unload`)
+```bash
+# Drops active model VRAM footprint to 0 MB immediately
+curl -X POST http://localhost:8100/api/models/unload
 ```
 
 ---
