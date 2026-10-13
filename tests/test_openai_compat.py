@@ -119,3 +119,55 @@ def test_v1_completions_sync(client):
         assert data["choices"][0]["text"] == "def calculate_sum():"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_v1_chat_completions_with_tools(client):
+    """Test /v1/chat/completions forwards tools and tool_choice if present."""
+    mock_service = AsyncMock()
+    mock_completion = MagicMock()
+    mock_completion.model_dump.return_value = {
+        "id": "chatcmpl-tools-123",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "qwen2.5-coder:3b",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {"name": "read_file", "arguments": '{"path": "run.py"}'},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+    }
+
+    mock_service.client.chat.completions.create = AsyncMock(return_value=mock_completion)
+    mock_service._compute_num_ctx = MagicMock(return_value=2048)
+
+    app.dependency_overrides[get_llm_service] = lambda: mock_service
+    try:
+        tools = [{"type": "function", "function": {"name": "read_file"}}]
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen2.5-coder:3b",
+                "messages": [{"role": "user", "content": "read run.py"}],
+                "stream": False,
+                "tools": tools,
+                "tool_choice": "auto",
+            },
+        )
+        assert response.status_code == 200
+        call_kwargs = mock_service.client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["tools"] == tools
+        assert call_kwargs["tool_choice"] == "auto"
+    finally:
+        app.dependency_overrides.clear()
+

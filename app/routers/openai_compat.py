@@ -36,6 +36,8 @@ class OpenAIChatRequest(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
     stream: bool | None = Field(default=False)
+    tools: list[dict[str, Any]] | None = Field(default=None, description="Tool definitions")
+    tool_choice: Any | None = Field(default=None, description="Tool choice mode")
 
     model_config = ConfigDict(extra="allow")
 
@@ -115,15 +117,23 @@ async def chat_completions(
         }
     }
 
+    call_kwargs: dict[str, Any] = {
+        "model": target_model,
+        "messages": request.messages,
+        "temperature": temp,
+        "max_tokens": max_tok,
+        "extra_body": extra_body,
+    }
+    if request.tools is not None:
+        call_kwargs["tools"] = request.tools
+    if request.tool_choice is not None:
+        call_kwargs["tool_choice"] = request.tool_choice
+
     try:
         if request.stream:
             stream = await service.client.chat.completions.create(
-                model=target_model,
-                messages=request.messages,
-                temperature=temp,
-                max_tokens=max_tok,
                 stream=True,
-                extra_body=extra_body,
+                **call_kwargs,
             )
 
             async def event_generator():
@@ -151,12 +161,8 @@ async def chat_completions(
 
         # Synchronous generation
         completion = await service.client.chat.completions.create(
-            model=target_model,
-            messages=request.messages,
-            temperature=temp,
-            max_tokens=max_tok,
             stream=False,
-            extra_body=extra_body,
+            **call_kwargs,
         )
         return JSONResponse(content=completion.model_dump())
 
