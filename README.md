@@ -82,13 +82,38 @@ c:\Users\Jeff\repo\LLM_Local\
 
 ## 🛠️ Getting Started
 
-### 1. Configure Ollama & Pull Models (One-Click)
+### 1. Prerequisites & Model Downloads
 
-Run the included PowerShell script to configure Windows environment variables for Flash Attention and KV Cache quantization, and pull the calibrated models:
+Since large model weight files (`*.gguf`) are excluded from Git version control, you must download the calibrated models locally. Ensure [Ollama](https://ollama.com/download) is installed on your system.
+
+#### Option A: One-Click Automated Setup (Recommended)
+Run the included PowerShell script. It automatically applies hardware acceleration flags (`OLLAMA_FLASH_ATTENTION=1` & `OLLAMA_KV_CACHE_TYPE=q8_0`), starts the engine, and pulls all calibrated models:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup_ollama.ps1
 ```
+
+#### Option B: Pull Models Individually via Ollama CLI
+If you prefer pulling models manually or only need specific tiers:
+
+```powershell
+# 1. Daily Driver — General chat & reasoning (3.8B, ~2.5 GB VRAM)
+ollama pull phi4-mini
+
+# 2. Fast Coding — Code generation & autocomplete (3B, ~2.2 GB VRAM)
+ollama pull qwen2.5-coder:3b
+
+# 3. Power Coding — Deep architecture & refactoring (7B, ~4.5 GB hybrid VRAM/RAM)
+ollama pull qwen2.5-coder:7b
+```
+
+#### Option C: Direct GGUF Download from Hugging Face
+If you want standalone `.gguf` files for offline storage in the `models/` directory:
+- **`models/phi4-mini.gguf`** (2.5 GB, Q4_K_M): [microsoft/Phi-4-mini-instruct-GGUF](https://huggingface.co/microsoft/Phi-4-mini-instruct-GGUF)
+- **`models/qwen2.5-coder-3b.gguf`** (1.9 GB, Q4_K_M): [Qwen/Qwen2.5-Coder-3B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF)
+- **`models/qwen2.5-coder-7b.gguf`** (4.7 GB, Q4_K_M): [Qwen/Qwen2.5-Coder-7B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF)
+
+> 💡 *Refer to [models/README.md](models/README.md) for instructions on creating Ollama Modelfiles from downloaded GGUFs or hardlinking existing Ollama cache without taking up extra disk space.*
 
 ### 2. Install Python Dependencies
 

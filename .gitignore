@@ -29,7 +29,9 @@ build/
 *.egg-info/
 
 # Large Model Weights (Too big for GitHub)
-models/
+models/*
+!models/README.md
+!models/.gitkeep
 *.gguf
 *.bin
 *.pt
